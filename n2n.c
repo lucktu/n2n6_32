@@ -220,7 +220,7 @@ void traceEvent(int eventTraceLevel, char* file, int line, char * format, ...) {
                 level = EVENTLOG_WARNING_TYPE;
             else if(eventTraceLevel == 2)
                 level = EVENTLOG_INFORMATION_TYPE;
-            
+
             ReportEventW(event_log, level, 0, 0x40020000L, NULL, 2, 0, msg, NULL);
         }
 #endif
@@ -347,12 +347,12 @@ size_t purge_expired_registrations( struct peer_info ** peer_list ) {
     if ((now - last_purge) < PURGE_REGISTRATION_FREQUENCY)
         return 0;
 
-    traceEvent(TRACE_INFO, "Purging old registrations");
+    traceEvent(TRACE_DEBUG, "Purging old registrations");
 
     num_reg = purge_peer_list( peer_list, now-REGISTRATION_TIMEOUT );
 
     last_purge = now;
-    traceEvent(TRACE_INFO, "Remove %ld registrations", num_reg);
+    traceEvent(TRACE_DEBUG, "Remove %ld registrations", num_reg);
 
     return num_reg;
 }

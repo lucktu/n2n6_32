@@ -63,7 +63,7 @@ static int transop_deinit_aes( n2n_trans_op_t * arg )
             random_free( &sa->random_ctx );
             n2n_aes_free( &sa->cipher_ctx );
         }
-    
+
         priv->num_sa=0;
         priv->tx_sa=-1;
 
@@ -118,9 +118,9 @@ static ssize_t transop_encode_aes( n2n_trans_op_t * arg,
             tx_sa_num = aes_choose_tx_sa( priv );
 
             sa = &(priv->sa[tx_sa_num]); /* Proper Tx SA index */
-        
+
             traceEvent( TRACE_DEBUG, "encode_aes %lu with SA %lu.", in_len, sa->sa_id );
-            
+
             /* Encode the aes format version. */
             encode_uint8( outbuf, &idx, N2N_AES_TRANSFORM_VERSION );
 
@@ -169,7 +169,7 @@ static ssize_t transop_encode_aes( n2n_trans_op_t * arg,
 static ssize_t aes_find_sa( const transop_aes_t * priv, const n2n_sa_t req_id )
 {
     size_t i;
-    
+
     for (i=0; i < priv->num_sa; ++i)
     {
         const sa_aes_t* sa = NULL;
@@ -205,7 +205,7 @@ static ssize_t transop_decode_aes( n2n_trans_op_t * arg,
     transop_aes_t * priv = (transop_aes_t *)arg->priv;
     uint8_t assembly[N2N_PKT_BUF_SIZE];
 
-    if ( ( (in_len - (TRANSOP_AES_VER_SIZE + TRANSOP_AES_SA_SIZE)) <= N2N_PKT_BUF_SIZE ) /* Cipher text fits in assembly */ 
+    if ( ( (in_len - (TRANSOP_AES_VER_SIZE + TRANSOP_AES_SA_SIZE)) <= N2N_PKT_BUF_SIZE ) /* Cipher text fits in assembly */
          && (in_len >= (TRANSOP_AES_VER_SIZE + TRANSOP_AES_SA_SIZE + TRANSOP_AES_NONCE_SIZE) ) /* Has at least version, SA and nonce */
         )
     {
@@ -231,11 +231,11 @@ static ssize_t transop_decode_aes( n2n_trans_op_t * arg,
                 traceEvent( TRACE_DEBUG, "decode_aes %lu with SA %lu.", in_len, sa_rx, sa->sa_id );
 
                 len = (in_len - (TRANSOP_AES_VER_SIZE + TRANSOP_AES_SA_SIZE));
-                
+
                 if ( 0 == (len % AES_BLOCK_SIZE) )
                 {
                     uint8_t padding;
-                    
+
 
                     memset( &(sa->dec_ivec), 0, N2N_AES_IVEC_SIZE );
 
@@ -243,7 +243,7 @@ static ssize_t transop_decode_aes( n2n_trans_op_t * arg,
 
                     /* last byte is how much was padding: max value should be
                      * AES_BLOCKSIZE-1 */
-                    padding = assembly[ len-1 ] & 0xff; 
+                    padding = assembly[ len-1 ] & 0xff;
                     if ( len >= (padding + TRANSOP_AES_NONCE_SIZE))
                     {
                         /* strictly speaking for this to be an ethernet packet
@@ -255,8 +255,8 @@ static ssize_t transop_decode_aes( n2n_trans_op_t * arg,
                         len -= TRANSOP_AES_NONCE_SIZE; /* size of ethernet packet */
 
                         /* Step over 4-byte random nonce value */
-                        memcpy( outbuf, 
-                                assembly + TRANSOP_AES_NONCE_SIZE, 
+                        memcpy( outbuf,
+                                assembly + TRANSOP_AES_NONCE_SIZE,
                                 len );
                     }
                     else
@@ -285,7 +285,7 @@ static ssize_t transop_decode_aes( n2n_trans_op_t * arg,
             traceEvent( TRACE_ERROR, "decode_aes unsupported aes version %u.", aes_enc_ver );
 
             /* REVISIT: should be able to load a new SA at this point to complete the decoding. */
-        }        
+        }
     }
     else
     {
@@ -298,7 +298,6 @@ static ssize_t transop_decode_aes( n2n_trans_op_t * arg,
 static int transop_addspec_aes( n2n_trans_op_t * arg, const n2n_cipherspec_t * cspec )
 {
     int retval = 1;
-    ssize_t pstat=-1;
     transop_aes_t * priv = (transop_aes_t *)arg->priv;
 
     if ( priv->num_sa < N2N_AES_NUM_SA )
@@ -310,30 +309,34 @@ static int transop_addspec_aes( n2n_trans_op_t * arg, const n2n_cipherspec_t * c
         {
             char tmp[256];
             size_t s;
-            
+
             s = sep - op;
             memcpy( tmp, cspec->opaque, s );
             tmp[s]=0;
-            
-            s = strlen(sep+1); /* sep is the _ which might be immediately followed by NULL */
+
+            s = strlen(sep+1);
 
             priv->sa[priv->num_sa].spec = *cspec;
             priv->sa[priv->num_sa].sa_id = strtoul(tmp, NULL, 10);
 
             memset( priv->sa[priv->num_sa].key, 0, N2N_MAX_KEYSIZE );
-            pstat = n2n_parse_hex( priv->sa[priv->num_sa].key, N2N_MAX_KEYSIZE, sep+1, s );
-            if ( pstat > 0 )
+            size_t key_len = s;
+            if (key_len > N2N_MAX_KEYSIZE) {
+                key_len = N2N_MAX_KEYSIZE;
+            }
+            memcpy( priv->sa[priv->num_sa].key, sep+1, key_len );
+
+            if ( key_len > 0 )
             {
-                /* pstat is number of bytes read into keybuf. */
                 sa_aes_t * sa = &(priv->sa[priv->num_sa]);
                 memset( &(sa->enc_ivec), 0, N2N_AES_IVEC_SIZE );
                 memset( &(sa->dec_ivec), 0, N2N_AES_IVEC_SIZE );
 
-                uint8_t key_length = n2n_aes_set_key( &sa->cipher_ctx, sa->key, (size_t) pstat );
-                
+                uint8_t key_length = n2n_aes_set_key( &sa->cipher_ctx, sa->key, key_len );
+
                 traceEvent( TRACE_DEBUG, "transop_addspec_aes sa_id=%u, %u bits data=%s.\n",
                             priv->sa[priv->num_sa].sa_id, key_length, sep+1);
-                
+
                 ++(priv->num_sa);
                 retval = 0;
             }
@@ -347,10 +350,9 @@ static int transop_addspec_aes( n2n_trans_op_t * arg, const n2n_cipherspec_t * c
     {
         traceEvent( TRACE_ERROR, "transop_addspec_aes : full.\n");
     }
-    
+
     return retval;
 }
-
 
 static n2n_tostat_t transop_tick_aes( n2n_trans_op_t * arg, time_t now )
 {
@@ -358,6 +360,7 @@ static n2n_tostat_t transop_tick_aes( n2n_trans_op_t * arg, time_t now )
     size_t i;
     int found=0;
     n2n_tostat_t r;
+		static int first_aes_success = 0;
 
     memset( &r, 0, sizeof(r) );
 
@@ -369,14 +372,19 @@ static n2n_tostat_t transop_tick_aes( n2n_trans_op_t * arg, time_t now )
         {
             time_t remaining = priv->sa[i].spec.valid_until - now;
 
-            traceEvent( TRACE_INFO, "transop_aes choosing tx_sa=%u (valid for %lu sec)", priv->sa[i].sa_id, remaining );
+            if (first_aes_success == 0) {
+                traceEvent( TRACE_INFO, "transop_aes choosing tx_sa=%u (valid for %lu sec)", priv->sa[i].sa_id, remaining );
+                first_aes_success = 1;
+            } else {
+                traceEvent( TRACE_DEBUG, "transop_aes choosing tx_sa=%u (valid for %lu sec)", priv->sa[i].sa_id, remaining );
+            }
             priv->tx_sa=i;
             found=1;
             break;
         }
         else
         {
-            traceEvent( TRACE_DEBUG, "transop_aes tick rejecting sa=%u  %lu -> %lu", 
+            traceEvent( TRACE_DEBUG, "transop_aes tick rejecting sa=%u  %lu -> %lu",
                         priv->sa[i].sa_id, priv->sa[i].spec.valid_from, priv->sa[i].spec.valid_until );
         }
     }

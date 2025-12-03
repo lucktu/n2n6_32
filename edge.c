@@ -338,13 +338,46 @@ static int edge_init(n2n_edge_t * eee)
     return(0);
 }
 
-
-/* Called in main() after options are parsed. */
+/** Called in main() after options are parsed. */
 static int edge_init_twofish( n2n_edge_t * eee, uint8_t *encrypt_pwd, uint64_t encrypt_pwd_len )
 {
     return transop_twofish_setup( &(eee->transop[N2N_TRANSOP_TF_IDX]), 0, encrypt_pwd, encrypt_pwd_len );
 }
 
+static int edge_init_aes( n2n_edge_t * eee, uint8_t *encrypt_pwd, uint64_t encrypt_pwd_len )
+{
+    n2n_cipherspec_t spec;
+    int retval;
+
+    /* Create a cipherspec for single-key AES operation */
+    spec.t = N2N_TRANSFORM_ID_AESCBC;
+    spec.valid_from = 0;
+    spec.valid_until = 0xFFFFFFFF;
+
+    /* Format: "0_hexkey" where 0 is SA ID */
+    snprintf((char*)spec.opaque, sizeof(spec.opaque), "0_");
+
+    /* Try hex first, if fails use ASCII directly */
+    int pstat = n2n_parse_hex(spec.opaque + 2, sizeof(spec.opaque) - 2,
+                             (char*)encrypt_pwd, encrypt_pwd_len);
+
+    if (pstat <= 0) {
+        /* Hex parsing failed, use ASCII directly */
+        memcpy(spec.opaque + 2, encrypt_pwd, encrypt_pwd_len);
+        spec.opaque[2 + encrypt_pwd_len] = '\0';
+        pstat = encrypt_pwd_len;
+    }
+
+    /* Add the spec to the AES transform */
+    retval = (eee->transop[N2N_TRANSOP_AESCBC_IDX].addspec)(
+                &(eee->transop[N2N_TRANSOP_AESCBC_IDX]), &spec );
+
+    if (retval == 0) {
+        eee->tx_transop_idx = N2N_TRANSOP_AESCBC_IDX;
+    }
+
+    return retval;
+}
 
 /** Find the transop op-struct for the transform enumeration required.
  *
@@ -540,6 +573,7 @@ static void help() {
 #endif /* #if N2N_CAN_NAME_IFACE */
         "-a [static:|dhcp:]<tun IP address>/<prefixlen> "
         "-c <community> "
+				"-B <encryption mode> "
         "[-k <encrypt key> | -K <key file>] "
 #if defined(N2N_HAVE_SETUID)
         "[-u <uid> -g <gid>]"
@@ -565,7 +599,9 @@ static void help() {
     printf("-a <mode:IPv4/prefixlen> | Set interface IPv4 address. For DHCP use '-r -a dhcp:0.0.0.0/0'\n");
     printf("-A <IPv6>/<prefixlen>    | Set interface IPv6 address, only supported if IPv4 set to 'static'\n");
     printf("-c <community>           | n2n community name the edge belongs to.\n");
-    printf("-k <encrypt key>         | Encryption key (ASCII) - also N2N_KEY=<encrypt key>. Not with -K.\n");
+		printf("-B <mode>                | Encryption: B0 = keyfile(-K), B1 = disable, B2 = twofish(-k), B3 = AES-CBC(-k)\n");
+		printf("                         : It can also be used as -B 3 (for better compatibility)\n");
+    printf("-k <encrypt key>         | Encryption key (ASCII, max 32) - also N2N_KEY=<encrypt key>. Not with -K.\n");
     printf("-K <key file>            | Specify a key schedule file to load. Not with -k.\n");
     printf("-l <supernode host:port> | Supernode IP:port\n");
     printf("[-4|-6]                  | Resolve supernode DNS name as IPv4 or IPv6 (default is unspecified)\n");
@@ -1718,6 +1754,9 @@ static void readFromIPSocket( n2n_edge_t * eee )
 {
     n2n_common_t        cmn; /* common fields in the packet header */
 
+		static int first_super_ack_shown = 0;
+		static int first_ok_message_shown = 0;
+
     n2n_sock_str_t      sockbuf1;
     n2n_sock_str_t      sockbuf2; /* don't clobber sockbuf1 if writing two addresses to trace */
     macstr_t            mac_buf1;
@@ -1866,11 +1905,20 @@ static void readFromIPSocket( n2n_edge_t * eee )
                     orig_sender = &(ra.sock);
                 }
 
-                traceEvent(TRACE_NORMAL, "Rx REGISTER_SUPER_ACK myMAC=%s [%s] (external %s). Attempts %u",
-                           macaddr_str( mac_buf1, ra.edgeMac ),
-                           sock_to_cstr(sockbuf1, &sender),
-                           sock_to_cstr(sockbuf2, orig_sender),
-                           (unsigned int)eee->sup_attempts );
+								if (first_super_ack_shown == 0) {
+										traceEvent(TRACE_NORMAL, "Rx REGISTER_SUPER_ACK myMAC=%s [%s] (external %s). Attempts %u",
+															 macaddr_str( mac_buf1, ra.edgeMac ),
+															 sock_to_cstr( sockbuf1, &sender ),
+															 sock_to_cstr( sockbuf2, orig_sender ),
+															 (unsigned int)eee->sup_attempts );
+										first_super_ack_shown = 1;
+								} else {
+										traceEvent(TRACE_DEBUG, "Rx REGISTER_SUPER_ACK myMAC=%s [%s] (external %s). Attempts %u",
+															 macaddr_str( mac_buf1, ra.edgeMac ),
+															 sock_to_cstr( sockbuf1, &sender ),
+															 sock_to_cstr( sockbuf2, orig_sender ),
+															 (unsigned int)eee->sup_attempts );
+								}
 
                 if ( 0 == memcmp( ra.cookie, eee->last_cookie, N2N_COOKIE_SIZE ) )
                 {
@@ -1880,10 +1928,16 @@ static void readFromIPSocket( n2n_edge_t * eee )
                                    sock_to_cstr(sockbuf1, &(ra.sn_bak) ) );
                     }
 
-                    eee->last_sup = now;
-                    eee->sn_wait=0;
-                    eee->sup_attempts = N2N_EDGE_SUP_ATTEMPTS; /* refresh because we got a response */
-                    traceEvent(TRACE_NORMAL, "[OK] Edge Peer <<< ================ >>> Super Node");
+										eee->last_sup = now;
+										eee->sn_wait=0;
+										eee->sup_attempts = N2N_EDGE_SUP_ATTEMPTS; /* refresh because we got a response */
+
+										if (first_ok_message_shown == 0) {
+												traceEvent(TRACE_NORMAL, "[OK] Edge Peer <<< ================ >>> Super Node");
+												first_ok_message_shown = 1;
+										} else {
+												traceEvent(TRACE_DEBUG, "[OK] Edge Peer <<< ================ >>> Super Node");
+										}
 
                     /* REVISIT: store sn_back */
                     eee->register_lifetime = ra.lifetime;
@@ -2280,6 +2334,7 @@ int main(int argc, char* argv[])
     int     mtu = DEFAULT_MTU;
     int     got_s = 0;
     struct tuntap_config tuntap_config;
+		int encrypt_mode = 2;
 
 #ifndef _WIN32
     uid_t   userid = 0; /* root is the only guaranteed ID */
@@ -2392,7 +2447,7 @@ int main(int argc, char* argv[])
     optarg = NULL;
     while((opt = getopt_long(argc,
         argv,
-        "46K:k:a:A:bc:Eu:g:m:M:d:l:p:fvhrt:R:", long_options, NULL
+        "46K:k:a:A:bc:Eu:g:m:M:d:l:p:fvhrt:R:B:", long_options, NULL
     )) != EOF) {
         switch (opt) {
         case '4':
@@ -2401,6 +2456,27 @@ int main(int argc, char* argv[])
         case '6':
             eee.sn_af = AF_INET6;
         break;
+				case 'B':
+				{
+						if (!optarg || strlen(optarg) == 0) {
+								fprintf(stderr, "Error: Invalid -B option format. Use -B3 or -B 3\n");
+								exit(1);
+						}
+
+						for (int i = 0; optarg[i]; i++) {
+								if (!isdigit(optarg[i])) {
+										fprintf(stderr, "Error: Invalid -B option format. Use -B3 or -B 3\n");
+										exit(1);
+								}
+						}
+
+						encrypt_mode = atoi(optarg);
+						if (encrypt_mode < 0 || encrypt_mode > 3) {
+								fprintf(stderr, "Error: Invalid encryption mode. Use B0-B3\n");
+								exit(1);
+						}
+						break;
+				}
         case'K':
         {
             if ( encrypt_key ) {
@@ -2696,6 +2772,40 @@ int main(int argc, char* argv[])
 
     if(local_port > 0)
         traceEvent(TRACE_NORMAL, "Binding to local port %d", (signed int)local_port);
+
+		if (encrypt_mode == 1) {
+				eee.null_transop = 1;
+		} else if (encrypt_mode == 0) {
+				 if (strlen(eee.keyschedule) == 0) {
+						fprintf(stderr, "Error: B0 mode requires -K <keyfile>\n");
+						exit(1);
+				}
+				if (edge_init_keyschedule(&eee) != 0) {
+						fprintf(stderr, "Error: keyschedule setup failed.\n");
+						return(-1);
+				}
+		} else if (encrypt_mode == 1) {
+				eee.null_transop = 1;
+		} else if (encrypt_mode == 2) {
+				if (!encrypt_key) {
+						fprintf(stderr, "Error: B2 mode requires -k <key>\n");
+						exit(1);
+				}
+				if(edge_init_twofish(&eee, (uint8_t*)(encrypt_key), strlen(encrypt_key)) < 0) {
+						fprintf(stderr, "Error: twofish setup failed.\n");
+						return(-1);
+				}
+		} else if (encrypt_mode == 3) {
+				// B3 - AES-CBC
+				if (!encrypt_key) {
+						fprintf(stderr, "Error: B3 mode requires -k <key>\n");
+						exit(1);
+				}
+				if(edge_init_aes( &eee, (uint8_t *)(encrypt_key), strlen(encrypt_key) ) < 0) {
+						fprintf(stderr, "Error: AES setup failed.\n");
+						return(-1);
+				}
+		}
 
     if ( encrypt_key ) {
         if(edge_init_twofish( &eee, (uint8_t *)(encrypt_key), strlen(encrypt_key) ) < 0) {

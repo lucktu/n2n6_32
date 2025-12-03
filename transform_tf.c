@@ -59,7 +59,7 @@ static int transop_deinit_twofish( n2n_trans_op_t * arg )
 
             random_free(&sa->random);
         }
-    
+
         priv->num_sa=0;
         priv->tx_sa=-1;
 
@@ -112,9 +112,9 @@ static ssize_t transop_encode_twofish( n2n_trans_op_t * arg,
             tx_sa_num = tf_choose_tx_sa( priv );
 
             sa = &(priv->sa[tx_sa_num]); /* Proper Tx SA index */
-        
+
             traceEvent( TRACE_DEBUG, "encode_twofish %lu with SA %lu.", in_len, sa->sa_id );
-            
+
             /* Encode the twofish format version. */
             encode_uint8( outbuf, &idx, N2N_TWOFISH_TRANSFORM_VERSION );
 
@@ -130,7 +130,7 @@ static ssize_t transop_encode_twofish( n2n_trans_op_t * arg,
 
             /* Encrypt the assembly contents and write the ciphertext after the SA. */
             len = TwoFishEncryptRaw( assembly, /* source */
-                                     outbuf + TRANSOP_TF_VER_SIZE + TRANSOP_TF_SA_SIZE, 
+                                     outbuf + TRANSOP_TF_VER_SIZE + TRANSOP_TF_SA_SIZE,
                                      in_len + TRANSOP_TF_NONCE_SIZE, /* enc size */
                                      sa->enc_tf);
             if ( len > 0 )
@@ -164,7 +164,7 @@ static ssize_t transop_encode_twofish( n2n_trans_op_t * arg,
 static ssize_t twofish_find_sa( const transop_tf_t * priv, const n2n_sa_t req_id )
 {
     size_t i;
-    
+
     for (i=0; i < priv->num_sa; ++i)
     {
         const sa_twofish_t * sa=NULL;
@@ -199,7 +199,7 @@ static ssize_t transop_decode_twofish( n2n_trans_op_t * arg,
     transop_tf_t * priv = (transop_tf_t *)arg->priv;
     uint8_t assembly[N2N_PKT_BUF_SIZE];
 
-    if ( ( (in_len - (TRANSOP_TF_VER_SIZE + TRANSOP_TF_SA_SIZE)) <= N2N_PKT_BUF_SIZE ) /* Cipher text fits in assembly */ 
+    if ( ( (in_len - (TRANSOP_TF_VER_SIZE + TRANSOP_TF_SA_SIZE)) <= N2N_PKT_BUF_SIZE ) /* Cipher text fits in assembly */
          && (in_len >= (TRANSOP_TF_VER_SIZE + TRANSOP_TF_SA_SIZE + TRANSOP_TF_NONCE_SIZE) ) /* Has at least version, SA and nonce */
         )
     {
@@ -226,7 +226,7 @@ static ssize_t transop_decode_twofish( n2n_trans_op_t * arg,
 
                 len = TwoFishDecryptRaw( (void *)(inbuf + TRANSOP_TF_VER_SIZE + TRANSOP_TF_SA_SIZE),
                                          assembly, /* destination */
-                                         (in_len - (TRANSOP_TF_VER_SIZE + TRANSOP_TF_SA_SIZE)), 
+                                         (in_len - (TRANSOP_TF_VER_SIZE + TRANSOP_TF_SA_SIZE)),
                                          sa->dec_tf);
 
                 if ( len > 0 )
@@ -234,8 +234,8 @@ static ssize_t transop_decode_twofish( n2n_trans_op_t * arg,
                     /* Step over 4-byte random nonce value */
                     len -= TRANSOP_TF_NONCE_SIZE; /* size of ethernet packet */
 
-                    memcpy( outbuf, 
-                            assembly + TRANSOP_TF_NONCE_SIZE, 
+                    memcpy( outbuf,
+                            assembly + TRANSOP_TF_NONCE_SIZE,
                             len );
                 }
                 else
@@ -258,7 +258,7 @@ static ssize_t transop_decode_twofish( n2n_trans_op_t * arg,
             traceEvent( TRACE_ERROR, "decode_twofish unsupported twofish version %u.", tf_enc_ver );
 
             /* REVISIT: should be able to load a new SA at this point to complete the decoding. */
-        }        
+        }
     }
     else
     {
@@ -285,24 +285,28 @@ static int transop_addspec_twofish( n2n_trans_op_t * arg, const n2n_cipherspec_t
         {
             char tmp[256];
             size_t s;
-            
+
             s = sep - op;
             memcpy( tmp, cspec->opaque, s );
             tmp[s]=0;
-            
+
             s = strlen(sep+1); /* sep is the _ which might be immediately followed by NULL */
             sa = &priv->sa[priv->num_sa];
             sa->spec = *cspec;
             sa->sa_id = strtoul(tmp, NULL, 10);
 
-            pstat = n2n_parse_hex( keybuf, N2N_MAX_KEYSIZE, sep+1, s );
-            if ( pstat > 0 )
-            {
+						size_t key_len = s;
+						if (key_len > N2N_MAX_KEYSIZE) {
+								key_len = N2N_MAX_KEYSIZE;
+						}
+
+						if ( key_len > 0 )
+						{
                 sa->enc_tf = TwoFishInit( keybuf, pstat);
                 sa->dec_tf = TwoFishInit( keybuf, pstat);
-                
+
                 traceEvent( TRACE_DEBUG, "transop_addspec_twofish sa_id=%u data=%s.\n", sa->sa_id, sep+1);
-                
+
                 ++(priv->num_sa);
                 retval = 0;
             }
@@ -316,7 +320,7 @@ static int transop_addspec_twofish( n2n_trans_op_t * arg, const n2n_cipherspec_t
     {
         traceEvent( TRACE_ERROR, "transop_addspec_twofish : full.\n");
     }
-    
+
     return retval;
 }
 
@@ -327,6 +331,7 @@ static n2n_tostat_t transop_tick_twofish( n2n_trans_op_t * arg, time_t now )
     size_t i;
     int found=0;
     n2n_tostat_t r;
+		static int first_tf_success = 0;
 
     memset( &r, 0, sizeof(r) );
 
@@ -338,14 +343,19 @@ static n2n_tostat_t transop_tick_twofish( n2n_trans_op_t * arg, time_t now )
         {
             time_t remaining = priv->sa[i].spec.valid_until - now;
 
-            traceEvent( TRACE_INFO, "transop_tf choosing tx_sa=%u (valid for %lu sec)", priv->sa[i].sa_id, remaining );
+            if (first_tf_success == 0) {
+                traceEvent( TRACE_INFO, "transop_tf choosing tx_sa=%u (valid for %lu sec)", priv->sa[i].sa_id, remaining );
+                first_tf_success = 1;
+            } else {
+                traceEvent( TRACE_DEBUG, "transop_tf choosing tx_sa=%u (valid for %lu sec)", priv->sa[i].sa_id, remaining );
+            }
             priv->tx_sa=i;
             found=1;
             break;
         }
         else
         {
-            traceEvent( TRACE_DEBUG, "transop_tf tick rejecting sa=%u  %lu -> %lu", 
+            traceEvent( TRACE_DEBUG, "transop_tf tick rejecting sa=%u  %lu -> %lu",
                         priv->sa[i].sa_id, priv->sa[i].spec.valid_from, priv->sa[i].spec.valid_until );
         }
     }
@@ -365,9 +375,9 @@ static n2n_tostat_t transop_tick_twofish( n2n_trans_op_t * arg, time_t now )
 }
 
 
-int transop_twofish_setup( n2n_trans_op_t * ttt, 
+int transop_twofish_setup( n2n_trans_op_t * ttt,
                            n2n_sa_t sa_num,
-                           uint8_t * encrypt_pwd, 
+                           uint8_t * encrypt_pwd,
                            uint64_t encrypt_pwd_len )
 {
     int retval = 1;
@@ -404,7 +414,7 @@ int transop_twofish_setup( n2n_trans_op_t * ttt,
         sa = &(priv->sa[priv->tx_sa]);
         sa->sa_id=sa_num;
         sa->spec.valid_until = 0x7fffffff;
-        
+
         random_init(&sa->random);
 
         /* This is a preshared key setup. Both Tx and Rx are using the same security association. */
@@ -420,7 +430,7 @@ int transop_twofish_setup( n2n_trans_op_t * ttt,
             ttt->tick = transop_tick_twofish; /* chooses a new tx_sa */
             ttt->fwd = transop_encode_twofish;
             ttt->rev = transop_decode_twofish;
-                
+
             retval = 0;
         }
         else
