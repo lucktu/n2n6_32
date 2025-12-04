@@ -39,6 +39,7 @@ struct n2n_sn
     sn_stats_t          stats;
     int                 daemon;         /* If non-zero then daemonise. */
     uint16_t            lport;          /* Local UDP port to bind to. */
+		uint16_t            mgmt_port;      /* Managing UDP ports */  
     SOCKET              sock;           /* Main socket for UDP traffic with edges. */
     SOCKET              sock6;
     SOCKET              mgmt_sock;      /* management socket. */
@@ -72,6 +73,7 @@ static int init_sn( n2n_sn_t * sss )
 
     sss->daemon = 1; /* By defult run as a daemon. */
     sss->lport = N2N_SN_LPORT_DEFAULT;
+		sss->mgmt_port = N2N_SN_MGMT_PORT;
     sss->sock = -1;
     sss->sock6 = -1;
     sss->mgmt_sock = -1;
@@ -730,10 +732,6 @@ int main( int argc, char * const argv[] )
     bool ipv4 = false, ipv6 = false;
 
 #ifndef _WIN32
-    char mgmt_path[108] = "";
-#endif
-
-#ifndef _WIN32
     /* stdout is connected to journald, so don't print data/time */
     if ( getenv( "JOURNAL_STREAM" ) )
         useSystemd = true;
@@ -767,7 +765,11 @@ int main( int argc, char * const argv[] )
                 break;
             case 't':
 #ifndef _WIN32
-                strncpy(mgmt_path, optarg, 108);
+						sss.mgmt_port = atoi(optarg);  
+						if (sss.mgmt_port == 0) {  
+								traceEvent(TRACE_ERROR, "Invalid management port: %s", optarg);  
+								exit(-1);  
+						}  
 #endif
                 break;
             case 'f': /* foreground */
@@ -845,15 +847,7 @@ int main( int argc, char * const argv[] )
     }
 
 #ifndef _WIN32
-    if (mgmt_path[0] == '\0') {
-#endif
-        sss.mgmt_sock = open_socket(N2N_SN_MGMT_PORT, 0 /* bind LOOPBACK */ );
-#ifndef _WIN32
-    }
-    else
-    {
-        sss.mgmt_sock = open_socket_unix(mgmt_path, 0660 );
-    }
+        sss.mgmt_sock = open_socket(sss.mgmt_port, 0 /* bind LOOPBACK */ );
 #endif // _WIN32
     if ( -1 == sss.mgmt_sock )
     {
@@ -867,14 +861,7 @@ int main( int argc, char * const argv[] )
         exit(-2);
     }
 #ifndef _WIN32
-    else if (mgmt_path[0] == '\0')
-    {
-        traceEvent( TRACE_NORMAL, "supernode is listening on UDP %u (management)", N2N_SN_MGMT_PORT );
-    }
-    else
-    {
-        traceEvent( TRACE_NORMAL, "supernode is listening on datagram %s (management)", mgmt_path);
-    }
+        traceEvent( TRACE_NORMAL, "supernode is listening on UDP %u (management)", sss.mgmt_port );
 #endif // _WIN32
     traceEvent(TRACE_NORMAL, "supernode started");
 
