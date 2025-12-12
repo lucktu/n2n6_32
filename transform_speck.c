@@ -201,6 +201,5 @@ int transop_speck_init(n2n_trans_op_t *ttt) {
     }
     ttt->priv = priv;
 
-    traceEvent(TRACE_NORMAL, "Speck transform initialized");
     return 0;
 }

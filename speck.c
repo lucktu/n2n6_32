@@ -6,6 +6,19 @@
 #include "portable_endian.h"
 
 #include "speck.h"
+#include <string.h>
+
+#ifndef _WIN32
+#include <endian.h>
+#endif
+
+#ifndef le32toh
+#define le32toh(x) ((uint32_t)(x))
+#endif
+
+#ifndef le64toh
+#define le64toh(x) ((uint64_t)(x))
+#endif
 
 #if defined (__AVX2__)	// AVX support ----------------------------------------------------
 
@@ -745,7 +758,7 @@ int speck_he_iv_encrypt (unsigned char *inout, speck_context_t *ctx) {
   y >>= 32;
 
   ((u64*)inout)[0] = le64toh (x);
-  ((u32*)inout)[2] = le32toh (y);
+  ((u64*)inout)[1] = le64toh (y);
 
   return 0;
 }
@@ -766,7 +779,7 @@ int speck_he_iv_decrypt (unsigned char *inout, speck_context_t *ctx) {
   y >>= 32;
 
   ((u64*)inout)[0] = le64toh (x);
-  ((u32*)inout)[2] = le32toh (y);
+  ((u64*)inout)[1] = le64toh (y);
 
   return 0;
 }

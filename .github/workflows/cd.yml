@@ -321,6 +321,7 @@ jobs:
             fi
           fi
 
+          # 关键修改：为非AES目标完全禁用AES
           if [[ "${TARGET}" == *_AES ]]; then
             AES_FLAGS="-DN2N_OPTION_AES=ON -DUSE_OPENSSL=1 -DOPENSSL_INCLUDE_DIR=${OPENSSL_PREFIX}/include -DOPENSSL_CRYPTO_LIBRARY=${OPENSSL_PREFIX}/lib/libcrypto.a"
           else

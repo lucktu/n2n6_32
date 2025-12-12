@@ -31,6 +31,7 @@
 #include "random.h"
 
 #ifdef N2N_HAVE_AES
+#include "aes.h"
 #if USE_OPENSSL
 #include <openssl/crypto.h>
 #elif USE_NETTLE
@@ -414,29 +415,39 @@ static int edge_init_twofish( n2n_edge_t * eee, uint8_t *encrypt_pwd, uint64_t e
     return retval;
 }
 
+#ifdef N2N_HAVE_AES
 static int edge_init_aes( n2n_edge_t * eee, uint8_t *encrypt_pwd, uint64_t encrypt_pwd_len )
 {
     n2n_cipherspec_t spec;
     int retval;
+    uint8_t padded_key[AES256_KEY_BYTES];  /* 32 bytes max */
+    size_t actual_key_len = encrypt_pwd_len;
 
     /* Create a cipherspec for single-key AES operation */
     spec.t = N2N_TRANSFORM_ID_AESCBC;
     spec.valid_from = 0;
     spec.valid_until = 0xFFFFFFFF;
 
-    /* Format: "0_hexkey" where 0 is SA ID */
+    /* Check key length and pad if necessary */
+    if (encrypt_pwd_len < AES128_KEY_BYTES) {
+        traceEvent(TRACE_WARNING, "AES key is too short (%zu bytes), padding to %d bytes",
+                    encrypt_pwd_len, AES128_KEY_BYTES);
+        memset(padded_key, 0, AES128_KEY_BYTES);
+        memcpy(padded_key, encrypt_pwd, encrypt_pwd_len);
+        actual_key_len = AES128_KEY_BYTES;
+        encrypt_pwd = padded_key;
+    } else if (encrypt_pwd_len > AES256_KEY_BYTES) {
+        traceEvent(TRACE_WARNING, "AES key is too long (%zu bytes), truncating to %d bytes",
+                    encrypt_pwd_len, AES256_KEY_BYTES);
+        actual_key_len = AES256_KEY_BYTES;
+    }
+
+    /* Format: "0_ascii_key" where 0 is SA ID - ASCII only */
     snprintf((char*)spec.opaque, sizeof(spec.opaque), "0_");
 
-    /* Try hex first, if fails use ASCII directly */
-    int pstat = n2n_parse_hex(spec.opaque + 2, sizeof(spec.opaque) - 2,
-        (char*)encrypt_pwd, encrypt_pwd_len);
-
-    if (pstat <= 0) {
-        /* Hex parsing failed, use ASCII directly */
-        memcpy(spec.opaque + 2, encrypt_pwd, encrypt_pwd_len);
-        spec.opaque[2 + encrypt_pwd_len] = '\0';
-        pstat = encrypt_pwd_len;
-    }
+    /* Use ASCII directly - no hex parsing */
+    memcpy(spec.opaque + 2, encrypt_pwd, actual_key_len);
+    spec.opaque[2 + actual_key_len] = '\0';
 
     /* Add the spec to the AES transform */
     retval = (eee->transop[N2N_TRANSOP_AESCBC_IDX].addspec)(
@@ -448,6 +459,7 @@ static int edge_init_aes( n2n_edge_t * eee, uint8_t *encrypt_pwd, uint64_t encry
 
     return retval;
 }
+#endif /* N2N_HAVE_AES */
 
 /** Find the transop op-struct for the transform enumeration required.
  *
@@ -641,7 +653,7 @@ void print_n2n_version() {
     );
 #endif // N2N_HAVE_AES
     printf("Copyright 2007-09 - http://www.ntop.org\n"
-           "Copyright 2018-19 - https://github.org/mxre/n2n\n\n");
+           "Copyright 2018-25 - https://github.org/mxre/n2n\n\n");
 }
 
 static void help() {
@@ -2322,7 +2334,8 @@ static int scan_route(char* optarg, struct tuntap_config* tuntap_config) {
     }
     else if ((tuntap_config->routes_count % 16) == 15)
     {
-        tuntap_config->routes = (route*) reallocarray(tuntap_config->routes, ((tuntap_config->routes_count / 16 + 2) * 16), sizeof(route));
+        tuntap_config->routes = (route*)realloc(tuntap_config->routes,
+            ((tuntap_config->routes_count / 16 + 2) * 16) * sizeof(route));
     }
 
     route* r = &tuntap_config->routes[tuntap_config->routes_count];
@@ -2842,7 +2855,9 @@ int main(int argc, char* argv[])
     cap_free(caps);
 #elif !defined(_WIN32)
     /* If running suid root then we need to setuid before using the force. */
-    setuid( 0 );
+    if (setuid(0) != 0) {
+        traceEvent(TRACE_WARNING, "setuid failed");
+    }
     /* setgid( 0 ); */
 #endif
 
@@ -2860,8 +2875,12 @@ int main(int argc, char* argv[])
                    (signed int)userid, (signed int)groupid);
 
         /* Finished with the need for root privileges. Drop to unprivileged user. */
-        setregid( groupid, groupid );
-        setreuid( userid, userid );
+        if (setregid(groupid, groupid) != 0) {
+            traceEvent(TRACE_WARNING, "setregid failed");
+        }
+        if (setreuid(userid, userid) != 0) {
+            traceEvent(TRACE_WARNING, "setreuid failed");
+        }
     }
 #endif
 
@@ -2869,6 +2888,7 @@ int main(int argc, char* argv[])
       traceEvent(TRACE_NORMAL, "Binding to local port %d", (signed int)local_port);
 
   if (encrypt_mode == 0) {
+						traceEvent(TRACE_NORMAL, "Using keyfile-based encryption");
       if (strlen(eee.keyschedule) == 0) {
           fprintf(stderr, "Error: B0 mode requires -K <keyfile>\n");
           exit(1);
@@ -2877,7 +2897,11 @@ int main(int argc, char* argv[])
           fprintf(stderr, "Error: keyschedule setup failed.\n");
           return(-1);
       }
+  } else if (encrypt_mode == 1) {
+      traceEvent(TRACE_NORMAL, "Using no encryption");
   } else if (encrypt_mode == 2) {
+				  // B2 - Twofish
+			   traceEvent(TRACE_NORMAL, "Using Twofish encryption");
       if (!encrypt_key) {
           traceEvent(TRACE_WARNING, "No encryption key provided, falling back to no encryption");
           encrypt_mode = 1;
@@ -2888,26 +2912,30 @@ int main(int argc, char* argv[])
               return(-1);
           }
       }
+#ifdef N2N_HAVE_AES
 		} else if (encrypt_mode == 3) {
-				// B3 - AES-CBC
-				if (!encrypt_key) {
-						fprintf(stderr, "Error: B3 mode requires -k <key>\n");
-						exit(1);
-				}
-				if(edge_init_aes( &eee, (uint8_t *)(encrypt_key), strlen(encrypt_key) ) < 0) {
-						fprintf(stderr, "Error: AES setup failed.\n");
-						return(-1);
-				}
+				  // B3 - AES-CBC
+				  traceEvent(TRACE_NORMAL, "Using AES-CBC encryption");
+				  if (!encrypt_key) {
+						    fprintf(stderr, "Error: B3 mode requires -k <key>\n");
+						    exit(1);
+			  	}
+				  if(edge_init_aes( &eee, (uint8_t *)(encrypt_key), strlen(encrypt_key) ) < 0) {
+						    fprintf(stderr, "Error: AES setup failed.\n");
+						    return(-1);
+			  	}
+#endif /* N2N_HAVE_AES */
 		} else if (encrypt_mode == 5) {
-				// B5 - Speck
-				if (!encrypt_key) {
-						fprintf(stderr, "Error: B5 mode requires -k <key>\n");
-						exit(1);
-				}
-				if(edge_init_speck(&eee, (uint8_t*)(encrypt_key), strlen(encrypt_key)) < 0) {
-						fprintf(stderr, "Error: Speck setup failed.\n");
-						return(-1);
-				}
+				  // B5 - Speck
+		  		traceEvent(TRACE_NORMAL, "Using Speck encryption");
+				  if (!encrypt_key) {
+					    	fprintf(stderr, "Error: B5 mode requires -k <key>\n");
+						    exit(1);
+			  	}
+			  	if(edge_init_speck(&eee, (uint8_t*)(encrypt_key), strlen(encrypt_key)) < 0) {
+						    fprintf(stderr, "Error: Speck setup failed.\n");
+						    return(-1);
+			  	}
   }
 
   /* keyschedule check should be independent of encryption modes */
